@@ -58,15 +58,18 @@ class Config:
     use_color_detection: bool = True
     # HSV hue range for "game blue" buttons. Adjust if your button colour
     # looks more cyan (lower hue) or violet (higher hue).
-    blue_hsv_lower: Tuple[int, int, int] = (90, 50, 50)
-    blue_hsv_upper: Tuple[int, int, int] = (145, 255, 255)
+    # Expanded range to catch more variations of blue
+    blue_hsv_lower: Tuple[int, int, int] = (80, 40, 40)
+    blue_hsv_upper: Tuple[int, int, int] = (155, 255, 255)
     # Minimum pixel area of a blue contour to be considered a button candidate.
-    blue_min_area: int = 400
+    # Reduced to catch smaller buttons
+    blue_min_area: int = 200
     # Acceptable aspect-ratio (width/height) range for button-like shapes.
-    blue_aspect_min: float = 1.2
-    blue_aspect_max: float = 10.0
+    # Widened range to accept more variations
+    blue_aspect_min: float = 1.0
+    blue_aspect_max: float = 15.0
     # Extra padding added around each detected blue region before OCR.
-    blue_region_pad: int = 6
+    blue_region_pad: int = 8
 
     # ── Template matching ───────────────────────────────────────────────────
     # Threshold for template matching (0.0 to 1.0, higher = stricter match)
@@ -118,8 +121,9 @@ def find_blue_regions(frame: np.ndarray, x0: int) -> List[Tuple[int, int, int, i
     mask = cv2.inRange(hsv, lower, upper)
 
     # Close small gaps inside buttons, remove speckle noise.
-    k_close = np.ones((7, 7), np.uint8)
-    k_open = np.ones((3, 3), np.uint8)
+    # Larger kernel for better button detection
+    k_close = np.ones((9, 9), np.uint8)
+    k_open = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k_close)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k_open)
 
