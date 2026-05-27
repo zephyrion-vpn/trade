@@ -1,28 +1,26 @@
-"""One-shot detector for 'Купить' buttons on the right side of the screen.
+"""One-shot detector for buttons using template matching.
 
 What it does:
 - Waits 3 seconds after launch.
 - Captures the primary screen once.
-- Detects blue-colored regions (potential buy buttons) by HSV color mask.
-- Optionally compares detected regions with a template image (buy_template.png).
+- Finds buttons by comparing with a template screenshot (button_template.png).
 - Draws a red highlight over the detected button areas.
 - Saves the annotated screenshot and opens a preview window.
 
 Install:
     pip install opencv-python mss numpy pillow
 
-No Tesseract OCR needed!
+No Tesseract OCR needed! No color detection! Pure template matching!
 
 Run:
     python trade.py
 
-Optional:
-    Place a small screenshot of your "Купить" button as 'buy_template.png' 
+Required:
+    Place a screenshot of your button as 'button_template.png' 
     in the current folder for template matching.
 
 Output:
 - annotated_buy_button.png in the current folder.
-- ocr_debug_right.png if debugging is enabled.
 """
 
 from __future__ import annotations
@@ -45,31 +43,10 @@ import tkinter as tk
 class Config:
     delay_seconds: int = 3
     output_path: str = "annotated_buy_button.png"
-    debug_output_path: str = "ocr_debug_right.png"
-    template_path: str = "buy_template.png"  # Template image for matching
-
-    # Only search the right part of the screen, where the buy buttons are.
-    right_crop_ratio: float = 0.55
+    template_path: str = "button_template.png"  # Template image for matching
 
     # Visual highlight.
     overlay_alpha: float = 0.28
-
-    # ── Blue-button color detection (HSV) ──────────────────────────────────
-    use_color_detection: bool = True
-    # HSV hue range for "game blue" buttons. Adjust if your button colour
-    # looks more cyan (lower hue) or violet (higher hue).
-    # Expanded range to catch more variations of blue
-    blue_hsv_lower: Tuple[int, int, int] = (80, 40, 40)
-    blue_hsv_upper: Tuple[int, int, int] = (155, 255, 255)
-    # Minimum pixel area of a blue contour to be considered a button candidate.
-    # Reduced to catch smaller buttons
-    blue_min_area: int = 200
-    # Acceptable aspect-ratio (width/height) range for button-like shapes.
-    # Widened range to accept more variations
-    blue_aspect_min: float = 1.0
-    blue_aspect_max: float = 15.0
-    # Extra padding added around each detected blue region before OCR.
-    blue_region_pad: int = 8
 
     # ── Template matching ───────────────────────────────────────────────────
     # Threshold for template matching (0.0 to 1.0, higher = stricter match)
@@ -78,8 +55,7 @@ class Config:
     template_nms_threshold: float = 0.5
 
     # Debugging.
-    save_debug_image: bool = True
-    print_ocr_debug: bool = True
+    print_debug: bool = True
 
 
 cfg = Config()
@@ -93,76 +69,29 @@ def grab_primary_screen() -> np.ndarray:
         return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
 
-def load_template() -> Optional[np.ndarray]:
-    """Load template image if it exists."""
+def load_template() -> np.ndarray:
+    """Load template image. Required for detection."""
     template_path = Path(cfg.template_path)
-    if template_path.exists():
-        template = cv2.imread(str(template_path))
-        if template is not None:
-            print(f"Loaded template: {template_path} ({template.shape[1]}x{template.shape[0]})")
-            return template
-    return None
+    if not template_path.exists():
+        raise FileNotFoundError(
+            f"Template file '{cfg.template_path}' not found!\n"
+            f"Please place a screenshot of your button as '{cfg.template_path}' in the current folder."
+        )
+    template = cv2.imread(str(template_path))
+    if template is None:
+        raise ValueError(f"Could not load template from '{template_path}'")
+    print(f"Loaded template: {template_path} ({template.shape[1]}x{template.shape[0]})")
+    return template
 
 
-# ── Blue-color region detection ──────────────────────────────────────────
-
-def find_blue_regions(frame: np.ndarray, x0: int) -> List[Tuple[int, int, int, int]]:
-    """Return (x, y, w, h) rectangles (in full-frame coords) of blue UI regions.
-
-    Searches only the right portion of the frame (x >= x0) to match the
-    same area as the OCR pass.  Each returned box is padded slightly so
-    that OCR has a little context around the button text.
-    """
-    crop = frame[:, x0:]
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-
-    lower = np.array(cfg.blue_hsv_lower, dtype=np.uint8)
-    upper = np.array(cfg.blue_hsv_upper, dtype=np.uint8)
-    mask = cv2.inRange(hsv, lower, upper)
-
-    # Close small gaps inside buttons, remove speckle noise.
-    # Larger kernel for better button detection
-    k_close = np.ones((9, 9), np.uint8)
-    k_open = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k_close)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k_open)
-
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    regions: List[Tuple[int, int, int, int]] = []
-    for cnt in contours:
-        cx, cy, cw, ch = cv2.boundingRect(cnt)
-        area = cw * ch
-        if area < cfg.blue_min_area:
-            continue
-        aspect = cw / max(ch, 1)
-        if not (cfg.blue_aspect_min <= aspect <= cfg.blue_aspect_max):
-            continue
-
-        # Translate back to full-frame coordinates and add padding.
-        pad = cfg.blue_region_pad
-        rx = max(0, cx + x0 - pad)
-        ry = max(0, cy - pad)
-        rw = cw + pad * 2
-        rh = ch + pad * 2
-        regions.append((rx, ry, rw, rh))
-
-    if cfg.print_ocr_debug:
-        print(f"  [color] found {len(regions)} blue region(s) in right crop")
-
-    return regions
-
-
-def find_by_template(frame: np.ndarray, template: np.ndarray, x0: int) -> List[Tuple[int, int, int, int, float]]:
+def find_by_template(frame: np.ndarray, template: np.ndarray) -> List[Tuple[int, int, int, int, float]]:
     """Find button locations using template matching.
     
     Returns list of (x, y, w, h, confidence) tuples.
     """
-    crop = frame[:, x0:]
-    
-    # Match template against the crop
-    result = cv2.matchTemplate(crop, template, cv2.TM_CCOEFF_NORMED)
-    h, w = template.shape[:2]
+    # Match template against the full frame
+    result = cv2.matchTemplate(frame, template, cv2.TM_CCOEFF_NORMED)
+    th, tw = template.shape[:2]
     
     # Find all matches above threshold
     locations = np.where(result >= cfg.template_threshold)
@@ -170,9 +99,8 @@ def find_by_template(frame: np.ndarray, template: np.ndarray, x0: int) -> List[T
     matches: List[Tuple[int, int, int, int, float]] = []
     for pt in zip(*locations[::-1]):
         conf = float(result[pt[1], pt[0]])
-        x = pt[0] + x0  # Translate to full-frame coordinates
-        y = pt[1]
-        matches.append((x, y, w, h, conf))
+        x, y = pt[0], pt[1]
+        matches.append((x, y, tw, th, conf))
     
     # Non-maximum suppression: remove overlapping detections
     filtered: List[Tuple[int, int, int, int, float]] = []
@@ -193,77 +121,27 @@ def find_by_template(frame: np.ndarray, template: np.ndarray, x0: int) -> List[T
         if keep:
             filtered.append((x, y, bw, bh, conf))
     
-    if cfg.print_ocr_debug:
-        print(f"  [template] found {len(filtered)} match(es) with threshold={cfg.template_threshold}")
+    if cfg.print_debug:
+        print(f"  Found {len(filtered)} match(es) with threshold={cfg.template_threshold}")
     
     return filtered
-
-
-def find_by_color_with_confidence(frame: np.ndarray, x0: int) -> List[Tuple[int, int, int, int, float]]:
-    """Find button locations using color detection, assign confidence based on color saturation.
-    
-    Returns list of (x, y, w, h, confidence) tuples.
-    """
-    regions = find_blue_regions(frame, x0)
-    results: List[Tuple[int, int, int, int, float]] = []
-    
-    for rx, ry, rw, rh in regions:
-        # Extract the region and calculate average saturation as confidence
-        region = frame[ry:ry+rh, rx:rx+rw]
-        if region.size == 0:
-            continue
-        
-        hsv_region = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
-        saturation = hsv_region[:, :, 1]
-        avg_saturation = float(np.mean(saturation)) / 255.0  # Normalize to 0-1
-        
-        # Confidence based on how "blue" the region is (saturation + hue consistency)
-        confidence = min(1.0, avg_saturation * 1.2)  # Boost slightly
-        
-        results.append((rx, ry, rw, rh, confidence))
-    
-    return results
 
 
 # ── main detection function ────────────────────────────────────────────────────
 
 def find_buy_button_boxes(frame: np.ndarray) -> List[Tuple[int, int, int, int, float, str]]:
-    h, w = frame.shape[:2]
-    x0 = int(w * cfg.right_crop_ratio)
-    
-    all_boxes: List[Tuple[int, int, int, int, float, str]] = []
-    
-    # Load template if available
     template = load_template()
     
-    # Pass 1: Template matching (most reliable if template exists)
-    if template is not None:
-        template_matches = find_by_template(frame, template, x0)
-        for x, y, bw, bh, conf in template_matches:
-            all_boxes.append((x, y, bw, bh, conf * 100, "BUY"))
+    # Find buttons using template matching
+    matches = find_by_template(frame, template)
     
-    # Pass 2: Color-based detection (works without template)
-    if cfg.use_color_detection:
-        color_matches = find_by_color_with_confidence(frame, x0)
-        for x, y, bw, bh, conf in color_matches:
-            # Only add if not already found by template matching
-            is_duplicate = False
-            for fx, fy, fw, fh, _, _ in all_boxes:
-                ix1 = max(x, fx)
-                iy1 = max(y, fy)
-                ix2 = min(x + bw, fx + fw)
-                iy2 = min(y + bh, fy + fh)
-                inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-                area = bw * bh
-                farea = fw * fh
-                if inter / float(min(area, farea) + 1e-6) > 0.5:
-                    is_duplicate = True
-                    break
-            if not is_duplicate:
-                all_boxes.append((x, y, bw, bh, conf * 100, "BUY"))
+    all_boxes: List[Tuple[int, int, int, int, float, str]] = []
+    for x, y, bw, bh, conf in matches:
+        all_boxes.append((x, y, bw, bh, conf * 100, "BUY"))
     
-    if cfg.print_ocr_debug:
-        print(f"Right crop starts at x={x0}, frame size={w}x{h}")
+    if cfg.print_debug:
+        h, w = frame.shape[:2]
+        print(f"Frame size={w}x{h}")
         total = len(all_boxes)
         print(f"  total candidates: {total}")
         for idx, (x, y, bw, bh, conf, text) in enumerate(all_boxes[:20], 1):
@@ -309,20 +187,7 @@ def annotate_frame(frame: np.ndarray, boxes: List[Tuple[int, int, int, int, floa
     return result
 
 
-def save_debug_image(frame: np.ndarray) -> None:
-    h, w = frame.shape[:2]
-    x0 = int(w * cfg.right_crop_ratio)
-    crop = frame[:, x0:]
 
-    # Save a blue-mask visualisation so it's easy to check colour tuning.
-    if cfg.use_color_detection:
-        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-        lower = np.array(cfg.blue_hsv_lower, dtype=np.uint8)
-        upper = np.array(cfg.blue_hsv_upper, dtype=np.uint8)
-        blue_mask = cv2.inRange(hsv, lower, upper)
-        blue_debug_path = cfg.debug_output_path.replace(".png", "_blue_mask.png")
-        cv2.imwrite(blue_debug_path, blue_mask)
-        print(f"Saved blue-mask debug image: {Path(blue_debug_path).resolve()}")
 
 
 def show_preview(image_bgr: np.ndarray) -> None:
@@ -349,11 +214,6 @@ def main() -> int:
     time.sleep(cfg.delay_seconds)
 
     frame = grab_primary_screen()
-    if cfg.save_debug_image:
-        try:
-            save_debug_image(frame)
-        except Exception as e:
-            print(f"Could not save debug image: {e}")
 
     boxes = find_buy_button_boxes(frame)
     annotated = annotate_frame(frame, boxes)
