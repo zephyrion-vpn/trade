@@ -39,15 +39,12 @@ from typing import List, Tuple
 
 def get_tessdata_dir_early() -> Path:
     """Раннее получение tessdata директории (до импорта pytesseract)."""
-    # Сначала проверяем переменную окружения TESSDATA_PREFIX (пользовательский путь)
+    # Проверяем переменную окружения TESSDATA_PREFIX (пользовательский путь)
     tessdata_prefix = os.environ.get("TESSDATA_PREFIX", "").strip()
     if tessdata_prefix:
         candidate = Path(tessdata_prefix)
         if candidate.exists():
             return candidate
-        # Если пользователь задал, но путь неверный - вернём всё равно его,
-        # чтобы ошибка была понятной
-        return candidate
     
     # Авто-определение пути
     tesseract_cmd = os.environ.get("TESSERACT_PATH", "")
@@ -69,27 +66,9 @@ def get_tessdata_dir_early() -> Path:
     
     if tesseract_cmd:
         exe_dir = Path(tesseract_cmd).resolve().parent
-        candidates = [exe_dir / "tessdata"]
-        
-        program_files = os.environ.get("PROGRAMFILES")
-        if program_files:
-            candidates.append(Path(program_files) / "Tesseract-OCR" / "tessdata")
-        
-        program_files_x86 = os.environ.get("PROGRAMFILES(X86)")
-        if program_files_x86:
-            candidates.append(Path(program_files_x86) / "Tesseract-OCR" / "tessdata")
-        
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if local_app_data:
-            candidates.append(Path(local_app_data) / "Programs" / "Tesseract-OCR" / "tessdata")
-        
-        seen = set()
-        for p in candidates:
-            p = p.resolve()
-            if p not in seen and p.exists():
-                return p
-        
-        return exe_dir / "tessdata"
+        tessdata_dir = exe_dir / "tessdata"
+        if tessdata_dir.exists():
+            return tessdata_dir
     
     # Fallback
     return Path(".")
@@ -98,8 +77,12 @@ def get_tessdata_dir_early() -> Path:
 # Устанавливаем TESSDATA_PREFIX до импорта pytesseract
 _tessdata_early = get_tessdata_dir_early()
 if _tessdata_early.exists():
-    os.environ["TESSDATA_PREFIX"] = str(_tessdata_early)
-os.environ["TESSDATA_DIR"] = str(_tessdata_early)
+    # Используем краткий путь без кириллицы, если задан TESSDATA_PREFIX
+    user_prefix = os.environ.get("TESSDATA_PREFIX", "").strip()
+    if user_prefix:
+        os.environ["TESSDATA_PREFIX"] = user_prefix
+    else:
+        os.environ["TESSDATA_PREFIX"] = str(_tessdata_early)
 
 import cv2
 import mss
@@ -153,7 +136,7 @@ if sys.platform.startswith("win"):
 
 # TESSDATA_DIR уже установлен на уровне модуля (до импорта pytesseract)
 # Используем то же значение для согласованности
-TESSDATA_DIR = _tessdata_early
+TESSDATA_DIR = Path(os.environ.get("TESSDATA_PREFIX", str(_tessdata_early)))
 
 
 @dataclass
@@ -238,13 +221,9 @@ def ensure_tesseract_ready() -> None:
             "Положи их в папку tessdata или установи русские/английские языковые данные Tesseract."
         )
     
-    # Дополнительная проверка: если пользователь задал TESSDATA_PREFIX, убедимся что он совпадает
-    user_prefix = os.environ.get("TESSDATA_PREFIX", "").strip()
-    if user_prefix and Path(user_prefix).resolve() != TESSDATA_DIR.resolve():
-        print(f"Предупреждение: TESSDATA_PREFIX={user_prefix} не совпадает с авто-определённым путём {TESSDATA_DIR}")
-    else:
-        print(f"Tesseract executable: {TESSERACT_CMD}")
-        print(f"Tessdata directory: {TESSDATA_DIR}")
+    print(f"Tesseract executable: {TESSERACT_CMD}")
+    print(f"Tessdata directory: {TESSDATA_DIR}")
+    print(f"TESSDATA_PREFIX env: {os.environ.get('TESSDATA_PREFIX', 'not set')}")
 
 
 def grab_primary_screen() -> np.ndarray:
