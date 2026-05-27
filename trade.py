@@ -46,6 +46,11 @@ def get_tessdata_dir_early() -> Path:
         if candidate.exists():
             return candidate
     
+    # Проверяем стандартный путь C:\tesseract_data
+    custom_path = Path(r"C:\tesseract_data")
+    if custom_path.exists():
+        return custom_path
+    
     # Авто-определение пути
     tesseract_cmd = os.environ.get("TESSERACT_PATH", "")
     
