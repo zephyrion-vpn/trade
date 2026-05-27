@@ -41,12 +41,48 @@ from PIL import Image, ImageTk
 import tkinter as tk
 
 
-# Set the exact path to your Tesseract executable here.
-# The path must point to tesseract.exe, not just the folder.
-TESSERACT_CMD = r"C:\Users\Сергей\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+# Tesseract executable path - try to use from PATH first, otherwise check common locations
+TESSERACT_CMD = os.environ.get("TESSERACT_PATH", "")
+
+if not TESSERACT_CMD:
+    # Try to find tesseract in standard locations
+    import shutil
+    TESSERACT_CMD = shutil.which("tesseract") or ""
+    
+if not TESSERACT_CMD:
+    # Fallback to common Windows installation paths
+    possible_paths = [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Tesseract-OCR", "tesseract.exe"),
+    ]
+    for path in possible_paths:
+        if path and Path(path).exists():
+            TESSERACT_CMD = path
+            break
+
+if not TESSERACT_CMD:
+    raise RuntimeError(
+        "Tesseract OCR не найден. Установите Tesseract и либо:\n"
+        "1. Добавьте его в PATH\n"
+        "2. Или задайте переменную окружения TESSERACT_PATH с полным путём к tesseract.exe"
+    )
 
 
-def _candidate_tessdata_dirs() -> List[Path]:
+def get_tessdata_dir() -> Path:
+    """Get tessdata directory from TESSDATA_PREFIX environment variable or auto-detect."""
+    # First, check if TESSDATA_PREFIX is set by user (handles Cyrillic paths)
+    tessdata_prefix = os.environ.get("TESSDATA_PREFIX", "").strip()
+    if tessdata_prefix:
+        candidate = Path(tessdata_prefix)
+        if candidate.exists():
+            return candidate
+        raise FileNotFoundError(
+            f"Папка TESSDATA_PREFIX указана, но не найдена: {tessdata_prefix}\n"
+            f"Проверьте значение переменной окружения TESSDATA_PREFIX."
+        )
+    
+    # Auto-detect fallback
     exe_dir = Path(TESSERACT_CMD).resolve().parent
     candidates = [
         exe_dir / "tessdata",
@@ -66,28 +102,12 @@ def _candidate_tessdata_dirs() -> List[Path]:
 
     # De-duplicate while preserving order.
     seen = set()
-    result = []
     for p in candidates:
         p = p.resolve()
-        if p not in seen:
-            seen.add(p)
-            result.append(p)
-    return result
-
-
-def find_tessdata_dir() -> Path:
-    for candidate in _candidate_tessdata_dirs():
-        if (candidate / "rus.traineddata").exists() and (candidate / "eng.traineddata").exists():
-            return candidate
-
-    for candidate in _candidate_tessdata_dirs():
-        if candidate.exists():
-            return candidate
-
-    return _candidate_tessdata_dirs()[0]
-
-
-TESSDATA_DIR = find_tessdata_dir()
+        if p not in seen and p.exists():
+            return p
+    
+    return exe_dir / "tessdata"
 
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
@@ -99,11 +119,16 @@ if sys.platform.startswith("win"):
     except Exception:
         pt.DEFAULT_ENCODING = "cp1251"
 
+# Get tessdata directory (respects TESSDATA_PREFIX env var for Cyrillic paths)
+TESSDATA_DIR = get_tessdata_dir()
+
 # Pass tessdata path via environment variable only (not via --tessdata-dir CLI flag).
 # Using the CLI flag breaks when the path contains Cyrillic/non-ASCII characters on Windows.
-_tessdata_str = str(TESSDATA_DIR)
-os.environ["TESSDATA_PREFIX"] = _tessdata_str
-os.environ["TESSDATA_DIR"] = _tessdata_str  # extra alias some Tesseract builds check
+# Only set if not already defined by user (to respect their TESSDATA_PREFIX setting)
+if not os.environ.get("TESSDATA_PREFIX", "").strip():
+    _tessdata_str = str(TESSDATA_DIR)
+    os.environ["TESSDATA_PREFIX"] = _tessdata_str
+os.environ["TESSDATA_DIR"] = str(TESSDATA_DIR)  # extra alias some Tesseract builds check
 
 
 @dataclass
@@ -161,9 +186,10 @@ def ensure_tesseract_ready() -> None:
     if not exe.exists():
         raise FileNotFoundError(
             f"Не найден tesseract.exe по пути: {TESSERACT_CMD}\n"
-            f"Проверь путь в переменной TESSERACT_CMD."
+            f"Проверь путь в переменной TESSERACT_CMD или установи Tesseract."
         )
 
+    # TESSDATA_DIR уже получен через get_tessdata_dir(), который проверяет TESSDATA_PREFIX
     if not TESSDATA_DIR.exists():
         raise FileNotFoundError(
             f"Не найдена папка tessdata: {TESSDATA_DIR}\n"
@@ -186,6 +212,11 @@ def ensure_tesseract_ready() -> None:
             + "\nНужны как минимум rus.traineddata и eng.traineddata.\n\n"
             "Положи их в папку tessdata или установи русские/английские языковые данные Tesseract."
         )
+    
+    # Дополнительная проверка: если пользователь задал TESSDATA_PREFIX, убедимся что он совпадает
+    user_prefix = os.environ.get("TESSDATA_PREFIX", "").strip()
+    if user_prefix and Path(user_prefix).resolve() != TESSDATA_DIR.resolve():
+        print(f"Предупреждение: TESSDATA_PREFIX={user_prefix} не совпадает с авто-определённым путём {TESSDATA_DIR}")
 
 
 def grab_primary_screen() -> np.ndarray:
